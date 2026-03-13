@@ -19,3 +19,6 @@
 [submodule "contrib/tor"]
 	path = contrib/tor
 	url = https://github.com/EchterAgo/tor.git
+[submodule "contrib/mmr-accumulator"]
+	path = contrib/mmr-accumulator
+	url = https://github.com/A60AB5450353F40E/mmr-accumulator.git

@@ -47,6 +47,7 @@ from . import blockchain
 from . import version
 from .tor import TorController, check_proxy_bypass_tor_control
 from .utils import Event
+from .checkpoint_extender import CheckpointExtender, MMR_AVAILABLE
 
 DEFAULT_AUTO_CONNECT = True
 # Versions prior to 4.0.15 had this set to True, but we opted for False to
@@ -285,6 +286,12 @@ class Network(util.DaemonThread):
         self.debug = False
         self.irc_servers = {} # returned by interface (list from irc)
         self.recent_servers = self.read_recent_servers()
+
+        # Automatic checkpoint extension
+        self.checkpoint_extender: Optional[CheckpointExtender] = None
+        if MMR_AVAILABLE and self.config.get('verification_block_auto_extend', False):
+            self.checkpoint_extender = CheckpointExtender(self, self.config)
+            self.print_error("Checkpoint auto-extension enabled")
 
         self.banner = ''
         self.donation_address = ''
@@ -1323,6 +1330,13 @@ class Network(util.DaemonThread):
         # This interface was verified above. Get it syncing.
         if initial_interface_mode == Interface.MODE_VERIFICATION:
             self._process_latest_tip(interface)
+            # Bootstrap MMR accumulator from the verified proof
+            if self.checkpoint_extender and not self.checkpoint_extender.is_bootstrapped():
+                self.checkpoint_extender.bootstrap(
+                    checkpoint_height=header_height,
+                    header_hex=header,
+                    merkle_branch=result["branch"]
+                )
             return
 
         # If not finished, get the next chunk.
@@ -1635,6 +1649,12 @@ class Network(util.DaemonThread):
                 self.run_jobs()    # Synchronizer and Verifier and Fx
             self.process_pending_sends()
         self.stop_network()
+
+        # Extend checkpoint on shutdown and prune headers below new checkpoint
+        if self.checkpoint_extender and self.checkpoint_extender.is_bootstrapped():
+            self.print_error("Extending checkpoint before shutdown...")
+            if self.checkpoint_extender.extend_and_save():
+                self.checkpoint_extender.prune_below_checkpoint()
 
         self.tor_controller.active_port_changed.remove(self.on_tor_port_changed)
         self.tor_controller.stop()
