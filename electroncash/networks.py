@@ -48,6 +48,9 @@ class AbstractNet:
     DEFAULT_UNIT = "BCH"
     RPA_START_HEIGHT = 0
     PAYTACA_HOST = ""
+    # Verification chunk: headers needed for MTP calculation at checkpoint
+    # We need 11 headers: checkpoint - 10 through checkpoint (inclusive)
+    VERIFICATION_CHUNK_SIZE = 11
 
 
 class MainNet(AbstractNet):
@@ -187,6 +190,7 @@ class ScaleNet(TestNet):
 
     VERIFICATION_BLOCK_MERKLE_ROOT = "41eb32849a353fcb408c8b25e84578c714dbdc5ee774d0fbe25e85755250df6a"
     VERIFICATION_BLOCK_HEIGHT = 2016
+    VERIFICATION_CHUNK_SIZE = 147 # For CW-144 initialization
     asert_daa = ASERTDaa(is_testnet=False)  # Despite being a "testnet", ScaleNet uses 2d half-life
     asert_daa.anchor = None  # Intentionally not specified because it's after checkpoint; blockchain.py will calculate
 
@@ -207,6 +211,59 @@ class RegtestNet(TestNet):
     asert_daa = ASERTDaa(is_testnet=True) # not used on regtest
 
     DEFAULT_SERVERS = _read_json_dict('servers_regtest.json')  # DO NOT MODIFY IN CLIENT CODE
+
+
+def _apply_config_overrides(config):
+    """Apply checkpoint overrides from config. Called once at startup.
+
+    Only allowed for networks with a hardcoded ASERT anchor (MainNet, TestNet,
+    TestNet4, ChipNet). ScaleNet and RegTest are excluded.
+
+    Config keys:
+        verification_block_height: int - Must be higher than hardcoded checkpoint
+        verification_block_merkle_root: str - 64-char hex string
+
+    Returns:
+        True if overrides were applied successfully
+        False if configuration was invalid
+        None if no overrides were configured
+    """
+    if config is None:
+        return None
+
+    height = config.get('verification_block_height')
+    merkle_root = config.get('verification_block_merkle_root')
+
+    if height is None and merkle_root is None:
+        return None
+
+    if height is None or merkle_root is None:
+        return False
+
+    # Minimum height is 1 - Electrum protocol interprets cp_height=0 as no proof needed
+    if not isinstance(height, int) or height < 1:
+        return False
+    if net.VERIFICATION_BLOCK_HEIGHT is None:
+        return False
+    if height <= net.VERIFICATION_BLOCK_HEIGHT:
+        return False
+
+    # Disallow checkpoint override for networks without hardcoded ASERT anchor
+    # These networks need historical headers to calculate the anchor dynamically
+    if net.asert_daa.anchor is None:
+        return False
+
+    if not isinstance(merkle_root, str) or len(merkle_root) != 64:
+        return False
+    try:
+        bytes.fromhex(merkle_root)
+    except ValueError:
+        return False
+
+    net.VERIFICATION_BLOCK_HEIGHT = height
+    net.VERIFICATION_BLOCK_MERKLE_ROOT = merkle_root
+
+    return True
 
 
 # All new code should access this to get the current network config.

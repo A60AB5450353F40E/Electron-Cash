@@ -239,6 +239,16 @@ class Network(util.DaemonThread):
         util.DaemonThread.__init__(self)
         self.name = "Net" + self.name
         self.config = SimpleConfig(config) if isinstance(config, dict) else config
+
+        # Apply any checkpoint overrides from config
+        result = networks._apply_config_overrides(self.config)
+        if result is True:
+            self.print_error("using custom checkpoint: height={} merkle_root={}".format(
+                networks.net.VERIFICATION_BLOCK_HEIGHT,
+                networks.net.VERIFICATION_BLOCK_MERKLE_ROOT))
+        elif result is False:
+            self.print_error("invalid checkpoint override in config, using defaults")
+
         self.num_server = 10 if not self.config.get('oneserver') else 0
         self.blockchains = blockchain.read_blockchains(self.config)
         self.print_error("blockchains", self.blockchains.keys())
@@ -1263,10 +1273,7 @@ class Network(util.DaemonThread):
         verification_top_height = self.checkpoint_servers_verified.get(interface.server, {}).get('height', None)
         was_verification_request = False
         if verification_top_height is not None:
-            if not networks.net.REGTEST:
-                was_verification_request = request_base_height == verification_top_height - 147 + 1 and actual_header_count == 147
-            else:
-                was_verification_request = request_base_height == verification_top_height - 50 + 1 and actual_header_count == 50
+            was_verification_request = request_base_height == verification_top_height - networks.net.VERIFICATION_CHUNK_SIZE + 1 and actual_header_count == networks.net.VERIFICATION_CHUNK_SIZE
 
         initial_interface_mode = interface.mode
         if interface.mode == Interface.MODE_VERIFICATION:
@@ -1583,14 +1590,32 @@ class Network(util.DaemonThread):
     def init_headers_file(self):
         b = self.blockchains[0]
         filename = b.path()
-        # NB: HEADER_SIZE = 80 bytes
-        length = blockchain.HEADER_SIZE * (networks.net.VERIFICATION_BLOCK_HEIGHT + 1)
-        if not os.path.exists(filename) or os.path.getsize(filename) < length:
-            with open(filename, 'wb') as f:
-                if length>0:
-                    f.seek(length-1)
+        checkpoint_height = networks.net.VERIFICATION_BLOCK_HEIGHT
+
+        if checkpoint_height is not None:
+            # File should contain at least headers [0, checkpoint_height] inclusive
+            required_length = blockchain.HEADER_SIZE * (checkpoint_height + 1)
+
+            if os.path.exists(filename):
+                current_length = os.path.getsize(filename)
+            else:
+                current_length = 0
+
+            if current_length < required_length:
+                # Extend file with sparse allocation
+                mode = 'r+b' if current_length > 0 else 'wb'
+                with open(filename, mode) as f:
+                    f.seek(required_length - 1)
                     f.write(b'\x00')
-        util.ensure_sparse_file(filename)
+                    f.flush()
+                    os.fsync(f.fileno())
+                util.ensure_sparse_file(filename)
+        else:
+            # No checkpoint - just ensure file exists
+            if not os.path.exists(filename):
+                with open(filename, 'wb') as f:
+                    pass
+
         with b.lock:
             b.update_size()
 
@@ -1706,11 +1731,7 @@ class Network(util.DaemonThread):
             if self.checkpoint_height is None:
                 self.checkpoint_height = interface.tip - 100
             self.checkpoint_servers_verified[interface.server] = { 'root': None, 'height': self.checkpoint_height }
-            # We need at least 147 headers before the post checkpoint headers for daa calculations.
-            if not networks.net.REGTEST:
-                self._request_headers(interface, self.checkpoint_height - 147 + 1, 147, self.checkpoint_height)
-            else:
-                self._request_headers(interface, self.checkpoint_height - 50 + 1, 50, self.checkpoint_height)
+            self._request_headers(interface, self.checkpoint_height - networks.net.VERIFICATION_CHUNK_SIZE + 1, networks.net.VERIFICATION_CHUNK_SIZE, self.checkpoint_height)
         else:
             # We already have them verified, maybe we got disconnected.
             interface.print_error("request_initial_proof_and_headers bypassed")
