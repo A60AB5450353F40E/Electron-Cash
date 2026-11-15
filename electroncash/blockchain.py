@@ -62,6 +62,13 @@ def bits_to_work(bits):
     return (1 << 256) // (target + 1)
 
 
+def _block_interval(height: int) -> int:
+    """Target interval (ticks) of block `height`. CHIP-2025-03: 600 before
+    activation, the schedule's value from H_a + 1."""
+    sched = getattr(networks.net, 'CHIP_TICK_SCHEDULE', None)
+    return sched.tau(height) if sched else 600
+
+
 def _get_little_endian_num_bits(b: bytes) -> int:
     """ Returns 1 + the position of the highest bit that is set in bytes b
     or 0 if the bytes object is all 0's. Like BCHN's arith_uint256::bits() """
@@ -592,16 +599,23 @@ class Blockchain(util.PrintError):
             header_ts = header['timestamp']
             prev_ts = prior['timestamp']
             if networks.net.TESTNET:
-                # testnet 20 minute rule
-                if header_ts - prev_ts > 20*60:
+                # CHIP-2025-03: threshold is 2 * the interval of the block being
+                # computed, not a constant. 1200 s at 600 ticks, 120 s at 60;
+                # a fixed 1200 rejects every min-difficulty block once the
+                # cadence shortens. Strict > matches BCHN and the CHIP vectors.
+                if header_ts - prev_ts > 2 * _block_interval(height):
                     return MAX_BITS
 
             anchor = self.get_asert_anchor(prior, daa_mtp, chunk)
             assert anchor is not None, "Failed to find ASERT anchor block for chain {!r}".format(self)
 
             return networks.net.asert_daa.next_bits_aserti3_2d_ticks(
-    anchor.bits, anchor.height, prev_height, prev_timestamp, anchor.prev_time,
-    schedule=getattr(self.coin, 'CHIP_TICK_SCHEDULE', None))
+                anchor.bits,
+                anchor.height,
+                prevheight,
+                prev_ts,
+                anchor.prev_time,
+                schedule=getattr(networks.net, 'CHIP_TICK_SCHEDULE', None))
 
 
         # Mon Nov 13 19:06:40 2017 DAA HF

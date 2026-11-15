@@ -87,6 +87,25 @@ def _(message):
     return message
 
 
+def _ticks(height: int) -> int:
+    """Cumulative ticks at `height`, per CHIP-2025-03.
+
+    Falls back to the uniform 600-tick mapping when the active network carries
+    no schedule, which is bit-identical to the legacy height mapping on every
+    pre-activation chain.
+    """
+    if height <= 0:
+        return 0
+    sched = getattr(networks.net, 'CHIP_TICK_SCHEDULE', None)
+    return sched.tick(height) if sched else 600 * height
+
+
+def _normalized_locktime(height: int) -> int:
+    """Height-mode nLockTime naming the last whole 600-tick unit at or below
+    `height`. The tx is then final in block `height + 1`, as before."""
+    return _ticks(height) // 600
+
+
 TX_STATUS = [
     _('Unconfirmed parent'),
     _('Low fee'),
@@ -213,7 +232,7 @@ def sweep(privkeys, network, config, recipient, fee=None, imax=100, sign_schnorr
         raise NotEnoughFunds(_('Not enough funds on address.') + '\nTotal: %d satoshis\nFee: %d\nDust Threshold: %d'%(total, fee, dust_threshold(network)))
 
     outputs = [(TYPE_ADDRESS, recipient, total - fee)]
-    locktime = network.get_local_height()
+    locktime = 0
 
     tx = Transaction.from_io(inputs, outputs, locktime=locktime, sign_schnorr=sign_schnorr)
     tx.BIP69_sort()
@@ -2739,9 +2758,7 @@ class Abstract_Wallet(PrintError, SPVDelegate):
             tx.BIP69_sort()
         # Timelock tx to current height.
         locktime = self.get_local_height()
-        if locktime == -1: # We have no local height data (no headers synced).
-            locktime = 0
-        tx.locktime = locktime
+        tx.locktime = _normalized_locktime(locktime) if locktime > 0 else 0
         run_hook('make_unsigned_transaction', self, tx)
 
         return tx
